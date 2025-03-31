@@ -604,12 +604,12 @@ def train():
             print(f"Early stopping at epoch {epoch+1}")
             break
     
-    print("\nLoading best model for testing...")
+    print("Best model for testing...")
     checkpoint = torch.load(config['model_save_path'], map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     test_results = evaluate(model, test_loader, device, test_dataset)
-    print("\nTest Results:")
+    print("Test Results")
     print(f"F1: {test_results['f1']:.4f}")
     print(test_results['report'])
 
