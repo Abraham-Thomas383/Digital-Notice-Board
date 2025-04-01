@@ -83,7 +83,6 @@ def transformer_extract_event(email_body: str) -> str:
         return "Unnamed Event"
 
 def regex_extract_event(text: str) -> str:
-    """Final robust version that won't truncate technical terms."""
     if cultural_event := extract_cultural_event(text):
         return cultural_event
     
