@@ -1,5 +1,5 @@
 import torch
-from final import extract_event_details, extract_date, extract_topic, extract_time_range, extract_venue, predict, _extract_registration_links, load_model
+from final import extract_event_details, extract_date, extract_topic, extract_time, extract_venue, predict, _extract_registration_links, load_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -17,7 +17,6 @@ Women’s Registration: https://docs.google.com/forms/d/1EDrykPZK6vcsZM2zWPL_-im
 
 Don't miss out on this exciting event! Register now, take a break, and make unforgettable memories on the field.
 
-
 Play hard, have fun, and kick away the exam stress!
 """
     
@@ -26,7 +25,7 @@ event_details = extract_event_details(text)
     
 print("Event Details:", event_details)
 print("Topic:", extract_topic(text))
-print("Time:", extract_time_range(text))
+print("Time:", extract_time(text))
 print("Date:", extract_date(text))
 print("Venue:", extract_venue(text))
 print("Speaker:", predict(text, model, event_details['event_name']))
