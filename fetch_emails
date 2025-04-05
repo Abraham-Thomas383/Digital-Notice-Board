@@ -9,7 +9,7 @@ import mysql.connector
 from mysql.connector import Error
 from googleapiclient.discovery import build
 from auth import authenticate_gmail
-from final import extract_event_details, extract_date, extract_topic, extract_time, extract_venue, predict, _extract_registration_links, load_model
+from final import extract_event_details, extract_date, extract_topic, extract_time, extract_venue, predict, extract_links, load_model
 
 FETCHED_IDS_FILE = "fetched_ids.json"
 DB_CONFIG = {
@@ -123,11 +123,11 @@ def process_email(msg_id, service):
                 body = clean_subject_from_body(body)
 
     model = load_model("AT_2005/best_model.pt")
-    event_details = extract_event_details(body)
+    event_details = extract_event_details(subject)
     dates = extract_date(body)
     times = extract_time(body)
     place = extract_venue(body)
-    links = _extract_registration_links(body)
+    links = extract_links(body)
     topic = extract_topic(body)
     speaker = predict(body, model, event_details.get('event_name', ''))
 

@@ -23,28 +23,29 @@ def clean_event_name(raw_name: str) -> str:
     if re.match(r'^[A-Z]{1,3}\d{1,4}$', raw_name):
         return "Unnamed Event"
     
-    if len(raw_name.split()) > 2 and any(w.isupper() for w in raw_name.split()):
+    location_indicators = {
+        'room', 'hall', 'building', 'center', 'centre', 'lab',
+        'theater', 'theatre', 'auditorium', 'campus', 'floor', 'mess'
+    }
+    lower_name = raw_name.lower()
+    if any(indicator in lower_name for indicator in location_indicators):
+        return "Unnamed Event"
+    
+    raw_words = raw_name.strip().split()
+    has_capitalized = any(w[0].isupper() for w in raw_words if len(w) > 1)
+    
+    if len(raw_words) > 1 and has_capitalized:
         return raw_name.strip()
     
-    clean = re.split(r'(?:\son\s|\sat\s|\sfrom\s|,|;|-)', raw_name)[0]
+    clean = re.split(r'(?:\bon\b|\bat\b|\sfrom\s|,|;|-)', raw_name, maxsplit=1)[0].strip()
     clean = re.sub(r'\s*(?:to|will|the|a|for|by|of|on|at|p\.?s\.?)\s*$', '', clean, flags=re.I)
-    return clean.strip() if len(clean.split()) > 1 else "Unnamed Event"
+    
+    cleaned_words = clean.split()
+    if len(cleaned_words) > 1 and any(w[0].isupper() for w in cleaned_words):
+        return clean
+    
+    return "Unnamed Event"
 
-def classify_event_type(event_name: str) -> str:
-    if not event_name or event_name == "Unnamed Event":
-        return "unknown"
-    
-    lower_name = event_name.lower()
-    
-    if any(word in lower_name for word in ['puja', 'pooja', 'utsav', 'festival', 'celebration']):
-        return "cultural"
-    if any(word in lower_name for word in ['tournament', 'cup', 'match', 'game']):
-        return "sports"
-    if any(word in lower_name for word in ['conference', 'seminar', 'workshop']):
-        return "academic"
-    if any(word in lower_name for word in ['meeting', 'briefing', 'convention']):
-        return "business"
-    return "other"
 
 def extract_cultural_event(text: str) -> Optional[str]:
     patterns = [
@@ -97,6 +98,12 @@ def regex_extract_event(text: str) -> str:
     venue_phrases = re.findall(r'(?:Where|Venue|Location)\s*[:\?]\s*([^\n]+)', text, re.I)
     venue_words = {word for phrase in venue_phrases for word in phrase.strip().split()}
     
+    location_indicators = {
+        'room', 'hall', 'building', 'center', 'centre', 'lab', 
+        'theater', 'theatre', 'auditorium', 'campus', 'floor'
+    }
+    venue_words.update(location_indicators)
+    
     pattern = r'''
         (?:^|\s)  
         (
@@ -110,7 +117,10 @@ def regex_extract_event(text: str) -> str:
     candidates = [
         match.group(1).strip() 
         for match in re.finditer(pattern, text, re.VERBOSE)
-        if not any(word in match.group(1) for word in venue_words)
+        if not any(
+            word.lower() in match.group(1).lower() 
+            for word in venue_words
+        )
     ]
     
     if candidates:
@@ -121,23 +131,32 @@ def regex_extract_event(text: str) -> str:
 
 
 def extract_event_details(email_body: str) -> Dict[str, str]:
-    clean_text = ' '.join(email_body.split()[:200])
+    clean_text = ' '.join(email_body.split()[:500])
     
     cultural_event = extract_cultural_event(clean_text)
     if cultural_event:
         return {
-            'event_name': cultural_event,
-            'event_type': 'cultural'
+            'event_name': cultural_event
         }
     
+    venue_names = set()
+    venue = extract_venue(clean_text)
+    if venue:
+        venue_names.update(venue.split())
+    
     event_name = transformer_extract_event(clean_text)
-    if event_name == "Unnamed Event":
+    
+    if (event_name == "Unnamed Event" or 
+        any(venue_word.lower() in event_name.lower() for venue_word in venue_names)):
         event_name = regex_extract_event(clean_text)
     
+    if any(venue_word.lower() in event_name.lower() for venue_word in venue_names):
+        event_name = "Unnamed Event"
+    
     return {
-        'event_name': event_name,
-        'event_type': classify_event_type(event_name)
+        'event_name': event_name
     }
+
 
 def load_model(model_path):
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
@@ -198,13 +217,27 @@ def predict(text: str, model, current_event_name: str = None) -> List[str]:
     if current_event_name:
         text = remove_event_name(text, current_event_name)
     
-    speaker_match = re.search(r'(?:Speaker|Presented by|By)\s*:\s*([^\n]+)', text, re.IGNORECASE)
-    if speaker_match:
-        speaker = speaker_match.group(1).strip()
-        if is_proper_name(speaker):
-            return [speaker]
-        return []
+    speaker_patterns = [
+        r'(?:Speaker|Presented by|By|Talk by|Keynote by)\s*[:\-]\s*((?:Prof\.|Dr\.)?\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+        r'(?:Speaker|Presented by|By|Talk by|Keynote by)\s*[:\-]\s*([A-Z]+(?:\s+[A-Z]+)*)',
+        r'\b(?:by|from)\s+((?:Prof\.|Dr\.)?\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+    ]
     
+    for pattern in speaker_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            speaker = match.group(1).strip()
+            if is_proper_name(speaker):
+                return [speaker]
+    
+    signature_match = re.search(
+        r'(?:Regards|Thanks|From)[,\s]+([A-Z][a-zA-Z\s]+Team\b|[A-Z][a-zA-Z\s]+Club\b)',
+        text,
+        re.IGNORECASE
+    )
+    if signature_match:
+        return []
+
     word_tensor, char_tensor, mask, tokens = preprocess_text(text)
     if not tokens:
         return []
@@ -240,39 +273,51 @@ def is_proper_name(text: str) -> bool:
     if len(text) < 2:
         return False
     
+    excluded_terms = {
+        'uncover', 'join', 'attend', 'learn', 'discover', 'explore',
+        'register', 'participate', 'submit', 'pumped', 'hey', 'there',
+        'welcome', 'hello', 'hi', 'dear', 'thanks', 'regards'
+    }
+    if any(term in text.lower() for term in excluded_terms):
+        return False
+    
     words = text.split()
-    if not all(word[0].isupper() for word in words if word):
+    if len(words) > 1 and not any(w[0].isupper() for w in words[1:] if w):
         return False
     
     generic_terms = {
         'exam', 'exams', 'test', 'tests', 'meeting', 'event',
-        'announcement', 'notification', 'deadline', 'assignment'
+        'announcement', 'notification', 'deadline', 'assignment',
+        'team', 'club', 'committee', 'department'
     }
     if any(word.lower() in generic_terms for word in words):
         return False
     
-    titles = {'Dr.', 'Prof.', 'Mr.', 'Mrs.', 'Ms.', 'PhD'}
+    titles = {'Dr.', 'Prof.', 'Mr.', 'Mrs.', 'Ms.', 'PhD', 'M.Tech', 'B.Tech'}
     if any(word in titles for word in words):
-        return len(words) > 1  
+        return len(words) > 1
     
     if text.isupper():
         return len(text) <= 3 and '.' not in text
     
-    return True
+    return text[0].isupper()
 
-def extract_time_range(text):
+def extract_time(text):
     time_match = re.search(r'(?:Time|Timing)\s*:\s*([^\n]+)', text, re.IGNORECASE)
     if time_match:
-        return time_match.group(1).strip()
+        time_str = time_match.group(1).strip()
+        first_time = re.search(r'\b(?:[01]?\d|2[0-3])(?:[.:][0-5]\d)?(?:\s?[APap][Mm])?\b', time_str)
+        if first_time:
+            return first_time.group(0).strip()
     
     time_pattern = r'''
         \b(?:[01]?\d|2[0-3])       
         [.:]                        
-        [0-5]\d                      
-        (?:\s?[APap][Mm])?           
+        [0-5]\d                   
+        (?:\s?[APap][Mm])?         
         \b
         |
-        \b(?:[1-9]|1[0-2])\s?[APap][Mm]\b
+        \b(?:[1-9]|1[0-2])\s?[APap][Mm]\b  
     '''
 
     try:
@@ -280,20 +325,11 @@ def extract_time_range(text):
         if not matches:
             return None
         
-        normalized_matches = list({m.replace('.', ':').replace(' ', '').upper() for m in matches})
-        normalized_matches.sort()
-
-        explicit_time_match = re.search(r'(?:time|timing)\s*:\s*([0-9]{1,2}[.:][0-9]{2}\s*[APap][Mm]?)', text, re.IGNORECASE)
-        
-        if explicit_time_match:
-            explicit_time = explicit_time_match.group(1).replace('.', ':').replace(' ', '').upper()
-            return f"{explicit_time} - {normalized_matches[0]}" if len(normalized_matches) > 1 else explicit_time
-
-        return " - ".join(normalized_matches[:2]) if len(normalized_matches) >= 2 else normalized_matches[0]
+        first_time = matches[0]
+        return first_time.replace('.', ':').replace(' ', '').upper()
     
     except Exception as e:
-        return f"Error extracting time: {str(e)}"
-
+        return None
 
 def get_day_suffix(day: int) -> str:
     if 10 <= day <= 20:
@@ -302,37 +338,74 @@ def get_day_suffix(day: int) -> str:
         suffix_map = {1: 'st', 2: 'nd', 3: 'rd'}
         return suffix_map.get(day % 10, 'th')
 
-def extract_date(text: str):
-    date_match = re.search(r'(?:Date)\s*:\s*([^\n]+)', text, re.IGNORECASE)
-    if date_match:
-        return date_match.group(1).strip()
-    date_pattern = r"""
-        \b(?P<dmy>\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b |          
-        \b(?P<ymd>\d{4}-\d{1,2}-\d{1,2})\b |                
-        \b(?P<word>\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4})\b | 
-        \b(?P<word_comma>[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,\s+\d{4})\b  
-    """
+def get_day_suffix(day: int) -> str:
+    if 11 <= day <= 13:
+        return 'th'
+    else:
+        return {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
 
-    match = re.search(date_pattern, text, re.VERBOSE | re.IGNORECASE)
-    if match:
-        matched_date = match.group(0)
-        
-        matched_date = re.sub(r'(\d)(st|nd|rd|th)\b', r'\1', matched_date)
-        
-        try:
-            parsed_date = parse(matched_date, settings={'PREFER_DATES_FROM': 'future'})
-            if parsed_date:
-                day = parsed_date.day
-                suffix = get_day_suffix(day)
-                return parsed_date.strftime(f"%d{suffix} %B %Y")
-        except:
-            return matched_date  
+def extract_date(text: str) -> str | None:
+    month_match = re.search(
+        r'(\d{1,2}(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|'
+        r'August|September|October|November|December)\s+\d{4})',
+        text, 
+        re.IGNORECASE
+    )
+    if month_match:
+        full_date = month_match.group(1)
+        day = re.sub(r'\D', '', full_date.split()[0])
+        month = month_match.group(2)
+        year = re.search(r'\d{4}', full_date).group()
+        suffix = get_day_suffix(int(day))
+        return f"{day}{suffix} {month.capitalize()} {year}"
+
+    when_match = re.search(r'(?:When|Date)\s*[:\?]\s*([^\n]+)', text, re.IGNORECASE)
+    if when_match:
+        when_text = when_match.group(1).strip()
+        parsed_date = parse(when_text, settings={'PREFER_DATES_FROM': 'future'})
+        if parsed_date:
+            day = parsed_date.day
+            suffix = get_day_suffix(day)
+            return parsed_date.strftime(f"%d{suffix} %B %Y")
+
+    time_phrase_match = re.search(
+        r'\b(this evening|tonight|this morning)\b', 
+        text, 
+        re.IGNORECASE
+    )
+    if time_phrase_match:
+        today = datetime.today()
+        day = today.day
+        suffix = get_day_suffix(day)
+        return today.strftime(f"%d{suffix} %B %Y")
 
     if re.search(r'\btoday\b', text, re.IGNORECASE):
-        return datetime.today().strftime("%d/%m/%Y")
-    
+        today = datetime.today()
+        day = today.day
+        suffix = get_day_suffix(day)
+        return today.strftime(f"%d{suffix} %B %Y")
+
     if re.search(r'\btomorrow\b', text, re.IGNORECASE):
-        return (datetime.today() + timedelta(days=1)).strftime("%d/%m/%Y")
+        tomorrow = datetime.today() + timedelta(days=1)
+        day = tomorrow.day
+        suffix = get_day_suffix(day)
+        return tomorrow.strftime(f"%d{suffix} %B %Y")
+
+    date_pattern = r"""
+        \b(?P<dmy>\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b|
+        \b(?P<ymd>\d{4}-\d{1,2}-\d{1,2})\b|
+        \b(?P<word>\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4})\b|
+        \b(?P<word_comma>[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,\s+\d{4})\b
+    """
+    match = re.search(date_pattern, text, re.VERBOSE | re.IGNORECASE)
+    if match:
+        matched_date = next(g for g in match.groups() if g)
+        matched_date = re.sub(r'(\d)(st|nd|rd|th)\b', r'\1', matched_date)
+        parsed_date = parse(matched_date, settings={'PREFER_DATES_FROM': 'future'})
+        if parsed_date:
+            day = parsed_date.day
+            suffix = get_day_suffix(day)
+            return parsed_date.strftime(f"%d{suffix} %B %Y")
 
     return None
 
@@ -343,54 +416,88 @@ def extract_topic(text):
     return None
 
 def extract_venue(text):
+    room_match = re.search(
+        r'\b([A-Z]{1,5}\d{1,5}[A-Z]?)\b',  
+        text
+    )
+    if room_match:
+        return room_match.group(1)
+    
+    area_match = re.search(
+        r'\b(?:in|at)\s+(?:the\s+)?([A-Z][a-zA-Z0-9\s]+?(?:area|room|hall|theater|lab))\b',
+        text,
+        re.IGNORECASE
+    )
+    if area_match:
+        raw_venue = area_match.group(1).strip()
+        clean_venue = re.sub(r'[^\w\s]', '', raw_venue).strip()
+        
+        if re.search(r'\bSc\s*ops\b', clean_venue, re.IGNORECASE):
+            clean_venue = 'Sccoops area'
+        return clean_venue
+    
     venue_match = re.search(
-        r'(?:in|at|venue)\s+(?:the\s+)?([A-Z][a-zA-Z0-9\s]+?(?:area|room|hall|theater|lab))', 
-        text, 
+        r'(?:Venue|Location|Place)\s*:\s*([^\n]+)',
+        text,
         re.IGNORECASE
     )
     if venue_match:
-        return venue_match.group(1).strip()
-    
-    venue_match = re.search(r'(?:Venue|Location|Place)\s*:\s*([^\n]+)', text, re.IGNORECASE)
-    if venue_match:
-        return venue_match.group(1).strip()
-    
-    code_match = re.search(r'\b[A-Za-z]{2}\d{3}\b', text)
-    if code_match:
-        return code_match.group(0)
+        raw_venue = venue_match.group(1).strip()
+        clean_venue = re.sub(r'[^\w\s]', '', raw_venue).strip()
+        
+        if re.search(r'\bSc\s*ops\b', clean_venue, re.IGNORECASE):
+            clean_venue = 'Sccoops area'
+        return clean_venue
     
     entities = loc_model(text)
     location = []
     
     for entity in entities:
         if entity['entity'] in ['B-LOC', 'I-LOC']:
-            location.append(entity['word'])
+            clean_word = re.sub(r'[^\w\s]', '', entity['word']).strip()
+            if clean_word:
+                if re.search(r'\bSc\s*ops\b', clean_word, re.IGNORECASE):
+                    clean_word = 'Sccoops'
+                location.append(clean_word)
     
     if location:
-        return ' '.join(location)
+        venue = ' '.join(location)
+        if re.search(r'\bSc\s*ops\b', venue, re.IGNORECASE):
+            venue = 'Sccoops area'
+        return venue
     
     return None
 
-def _extract_registration_links(text: str) -> Dict[str, str]:
-    matches = re.findall(
-        r'([^\n:]+Registration)\s*[:\-]\s*((?:https?://|www\.)[^\s<>"\']+)', 
-        text, 
-        re.IGNORECASE
-    )
+def extract_links(text: str) -> Dict[str, List[str]]:
+    closing_phrases = r"(regards|cheers|thank you|thanks|sincerely|best wishes)[\s\S]*$"
+    truncated_text = re.sub(closing_phrases, "", text, flags=re.IGNORECASE)
 
-    if not matches:
-        matches = re.findall(
-            r'([^\n:]+Registration)\s*[:\-]\s*\n\s*((?:https?://|www\.)[^\s<>"\']+)', 
-            text, 
-            re.IGNORECASE
-        )
+    url_pattern = r'(?<!@)(?:https?://|www\.)[^\s<>"\']+'
 
-    clean_matches = []
-    for label, url in matches:
-        url = re.sub(r'[.,;:!?\)\]\}\>]+$', '', url)
-        clean_matches.append((label.strip(), url))
-    
-    return dict(clean_matches)
+    context_patterns = {
+        "Registration": r'(?:register|sign\s*up|registration|rsvp|join|participate|last\s*day\s*to\s*register)\b[\s\S]*?(?:here|link|at)?\s*[:=]?\s*({})'.format(url_pattern),
+        "Photo Album": r'(?:album|photos?|pictures?|gallery)\b[\s\S]*?(?:here|link)?\s*[:=]?\s*({})'.format(url_pattern),
+        "Social Media": r'(?:\binstagram\b|\bfb\b|\bfacebook\b|\btwitter\b|\bx\b|\blinkedin\b|\bsocial\s*media\b)\b[\s\S]*?(?:here|profile|page)?\s*[:=]?\s*({})'.format(url_pattern),
+        "Contact": r'(?:\bcontact\b|\breach\s*out\b|\bwhatsapp\b|\bcall\b|\bphone\b|\bmobile\b|\bnumber\b)\b[\s\S]*?(?:here|us|at)?\s*[:=]?\s*({})'.format(url_pattern),
+    }
+
+    extracted_links = {key: [] for key in context_patterns.keys()}
+    matched_urls = set()
+
+    for link_type, pattern in context_patterns.items():
+        matches = re.findall(pattern, truncated_text, re.IGNORECASE)
+        for url in matches:
+            if url not in matched_urls:
+                extracted_links[link_type].append(url)
+                matched_urls.add(url)
+
+    all_urls = re.findall(url_pattern, truncated_text, re.IGNORECASE)
+    other_urls = [url for url in all_urls if url not in matched_urls]
+
+    if other_urls:
+        extracted_links["Other Links"] = other_urls
+
+    return {k: v for k, v in extracted_links.items() if v}
 
 def similar_text(text1: str, text2: str) -> bool:
     return text1.lower() in text2.lower() or text2.lower() in text1.lower()
