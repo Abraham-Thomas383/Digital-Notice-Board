@@ -345,6 +345,20 @@ def get_day_suffix(day: int) -> str:
         return {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
 
 def extract_date(text: str) -> str | None:
+    weekday_match = re.search(
+        r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*,\s*'
+        r'(\d{1,2}(?:st|nd|rd|th)?\s+'
+        r'(January|February|March|April|May|June|July|August|September|October|November|December))',
+        text, 
+        re.IGNORECASE
+    )
+    if weekday_match:
+        day = re.sub(r'\D', '', weekday_match.group(1).split()[0])
+        month = weekday_match.group(2)
+        year = datetime.now().year  # Use current year since year isn't specified
+        suffix = get_day_suffix(int(day))
+        return f"{day}{suffix} {month.capitalize()} {year}"
+
     month_match = re.search(
         r'(\d{1,2}(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|'
         r'August|September|October|November|December)\s+\d{4})',
@@ -410,9 +424,26 @@ def extract_date(text: str) -> str | None:
     return None
 
 def extract_topic(text):
-    topic_match = re.search(r'(?:Topic|Title|Subject)\s*:\s*([^\n]+)', text, re.IGNORECASE)
-    if topic_match:
-        return topic_match.group(1).strip()
+    bullet_match = re.search(
+        r'-\s*Topic:\s*\*([^\n*]+(?:\n[^\n*]+)*)\*',
+        text,
+        re.IGNORECASE
+    )
+    if bullet_match:
+        topic = bullet_match.group(1).strip()
+        topic = re.sub(r'\n\s*', ' ', topic)  
+        return re.sub(r'\*', '', topic)
+    
+    standard_match = re.search(
+        r'(?:Topic|Title|Subject)\s*:\s*\*?([^\n*]+(?:\n[^\n*]+)*)\*?',
+        text,
+        re.IGNORECASE
+    )
+    if standard_match:
+        topic = standard_match.group(1).strip()
+        topic = re.sub(r'\n\s*', ' ', topic)  
+        return re.sub(r'\*', '', topic)
+    
     return None
 
 def extract_venue(text):

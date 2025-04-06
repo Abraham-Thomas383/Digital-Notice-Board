@@ -129,6 +129,7 @@ def process_email(msg_id, service):
     place = extract_venue(body)
     links = extract_links(body)
     topic = extract_topic(body)
+    print(body)
     speaker = predict(body, model, event_details.get('event_name', ''))
 
     club_id = get_club_id(sender)
@@ -147,7 +148,7 @@ def process_email(msg_id, service):
         "Location": place[:100] if place else None,
         "Speaker": speaker[0][:100] if speaker else None,
         "Link": str(links) if links else None,
-        "Topic": topic[:100] if topic else None,
+        "Topic": topic if topic else None,
         "Description": event_details.get('event_description', '')[:255],
         "Date": dates if dates else None,
         "Time": times if times else None
