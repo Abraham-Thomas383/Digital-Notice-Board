@@ -236,7 +236,7 @@ def fetch_emails():
 schedule.every(1).seconds.do(fetch_emails)
 
 if __name__ == "__main__":
-    print("Starting email event processor...")
+    print("Starting email event processor")
     while True:
         schedule.run_pending()
         time.sleep(1)
