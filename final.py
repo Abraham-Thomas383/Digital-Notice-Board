@@ -19,6 +19,30 @@ event_extractor = pipeline(
     device=-1
 )
 
+def extract_structured_bullets(text: str) -> Dict[str, str]:
+    structured_bullets = re.findall(
+        r'-\s+\*([A-Za-z ]+)\*\s*:\s*([^\n]+)',
+        text
+    )
+    
+    results = {}
+    for field, value in structured_bullets:
+        field_lower = field.lower().strip()
+        value_clean = value.strip()
+        
+        if field_lower == 'speaker' and value_clean:
+            results['speaker'] = value_clean
+        elif field_lower == 'topic' and value_clean:
+            results['topic'] = value_clean
+        elif field_lower == 'venue' and value_clean:
+            results['venue'] = value_clean
+        elif field_lower == 'time' and value_clean:
+            results['time'] = value_clean
+        elif field_lower == 'date' and value_clean:
+            results['date'] = value_clean
+    
+    return results
+
 def clean_event_name(raw_name: str) -> str:
     if re.match(r'^[A-Z]{1,3}\d{1,4}$', raw_name):
         return "Unnamed Event"
@@ -45,7 +69,6 @@ def clean_event_name(raw_name: str) -> str:
         return clean
     
     return "Unnamed Event"
-
 
 def extract_cultural_event(text: str) -> Optional[str]:
     patterns = [
@@ -129,7 +152,6 @@ def regex_extract_event(text: str) -> str:
     
     return "Unnamed Event"
 
-
 def extract_event_details(email_body: str) -> Dict[str, str]:
     clean_text = ' '.join(email_body.split()[:500])
     
@@ -156,7 +178,6 @@ def extract_event_details(email_body: str) -> Dict[str, str]:
     return {
         'event_name': event_name
     }
-
 
 def load_model(model_path):
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
@@ -211,11 +232,60 @@ def remove_event_name(text: str, event_name: str) -> str:
     pattern = re.compile(re.escape(event_name), re.IGNORECASE)
     return pattern.sub("", text)
 
+def is_proper_name(text: str) -> bool:
+    if len(text) < 2:
+        return False
+    
+    excluded_terms = {
+        'uncover', 'join', 'attend', 'learn', 'discover', 'explore',
+        'register', 'participate', 'submit', 'pumped', 'hey', 'there',
+        'welcome', 'hello', 'hi', 'dear', 'thanks', 'regards'
+    }
+    if any(term in text.lower() for term in excluded_terms):
+        return False
+    
+    words = text.split()
+    if len(words) > 1 and not any(w[0].isupper() for w in words[1:] if w):
+        return False
+    
+    generic_terms = {
+        'exam', 'exams', 'test', 'tests', 'meeting', 'event',
+        'announcement', 'notification', 'deadline', 'assignment',
+        'team', 'club', 'committee', 'department'
+    }
+    if any(word.lower() in generic_terms for word in words):
+        return False
+    
+    titles = {'Dr.', 'Prof.', 'Mr.', 'Mrs.', 'Ms.', 'PhD', 'M.Tech', 'B.Tech'}
+    if any(word in titles for word in words):
+        return len(words) > 1
+    
+    if text.isupper():
+        return len(text) <= 3 and '.' not in text
+    
+    return text[0].isupper()
+
 def predict(text: str, model, current_event_name: str = None) -> List[str]:
     text = re.sub(r'^\s*(Dear|Hello|Hi)\s+[^,\n]+,?\s*', '', text, flags=re.IGNORECASE)
     
     if current_event_name:
         text = remove_event_name(text, current_event_name)
+    
+    structured_data = extract_structured_bullets(text)
+    if 'speaker' in structured_data:
+        speaker = structured_data['speaker']
+        if is_proper_name(speaker):
+            return [speaker]
+    
+    bullet_speaker = re.search(
+        r'-\s*\*?Speaker\*?\s*:\s*\*([^\n*]+)\*',
+        text, 
+        re.IGNORECASE
+    )
+    if bullet_speaker:
+        speaker = bullet_speaker.group(1).strip()
+        if is_proper_name(speaker):
+            return [speaker]
     
     speaker_patterns = [
         r'(?:Speaker|Presented by|By|Talk by|Keynote by)\s*[:\-]\s*((?:Prof\.|Dr\.)?\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
@@ -269,40 +339,14 @@ def predict(text: str, model, current_event_name: str = None) -> List[str]:
     
     return person_names
 
-def is_proper_name(text: str) -> bool:
-    if len(text) < 2:
-        return False
-    
-    excluded_terms = {
-        'uncover', 'join', 'attend', 'learn', 'discover', 'explore',
-        'register', 'participate', 'submit', 'pumped', 'hey', 'there',
-        'welcome', 'hello', 'hi', 'dear', 'thanks', 'regards'
-    }
-    if any(term in text.lower() for term in excluded_terms):
-        return False
-    
-    words = text.split()
-    if len(words) > 1 and not any(w[0].isupper() for w in words[1:] if w):
-        return False
-    
-    generic_terms = {
-        'exam', 'exams', 'test', 'tests', 'meeting', 'event',
-        'announcement', 'notification', 'deadline', 'assignment',
-        'team', 'club', 'committee', 'department'
-    }
-    if any(word.lower() in generic_terms for word in words):
-        return False
-    
-    titles = {'Dr.', 'Prof.', 'Mr.', 'Mrs.', 'Ms.', 'PhD', 'M.Tech', 'B.Tech'}
-    if any(word in titles for word in words):
-        return len(words) > 1
-    
-    if text.isupper():
-        return len(text) <= 3 and '.' not in text
-    
-    return text[0].isupper()
-
 def extract_time(text):
+    structured_data = extract_structured_bullets(text)
+    if 'time' in structured_data:
+        time_str = structured_data['time']
+        first_time = re.search(r'\b(?:[01]?\d|2[0-3])(?:[.:][0-5]\d)?(?:\s?[APap][Mm])?\b', time_str)
+        if first_time:
+            return first_time.group(0).strip()
+    
     time_match = re.search(r'(?:Time|Timing)\s*:\s*([^\n]+)', text, re.IGNORECASE)
     if time_match:
         time_str = time_match.group(1).strip()
@@ -332,19 +376,21 @@ def extract_time(text):
         return None
 
 def get_day_suffix(day: int) -> str:
-    if 10 <= day <= 20:
-        return 'th'  
-    else:
-        suffix_map = {1: 'st', 2: 'nd', 3: 'rd'}
-        return suffix_map.get(day % 10, 'th')
-
-def get_day_suffix(day: int) -> str:
     if 11 <= day <= 13:
         return 'th'
     else:
         return {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
 
 def extract_date(text: str) -> str | None:
+    structured_data = extract_structured_bullets(text)
+    if 'date' in structured_data:
+        date_str = structured_data['date']
+        parsed_date = parse(date_str, settings={'PREFER_DATES_FROM': 'future'})
+        if parsed_date:
+            day = parsed_date.day
+            suffix = get_day_suffix(day)
+            return parsed_date.strftime(f"%d{suffix} %B %Y")
+    
     weekday_match = re.search(
         r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*,\s*'
         r'(\d{1,2}(?:st|nd|rd|th)?\s+'
@@ -355,7 +401,7 @@ def extract_date(text: str) -> str | None:
     if weekday_match:
         day = re.sub(r'\D', '', weekday_match.group(1).split()[0])
         month = weekday_match.group(2)
-        year = datetime.now().year  # Use current year since year isn't specified
+        year = datetime.now().year
         suffix = get_day_suffix(int(day))
         return f"{day}{suffix} {month.capitalize()} {year}"
 
@@ -424,8 +470,12 @@ def extract_date(text: str) -> str | None:
     return None
 
 def extract_topic(text):
+    structured_data = extract_structured_bullets(text)
+    if 'topic' in structured_data:
+        return structured_data['topic']
+    
     bullet_match = re.search(
-        r'-\s*Topic:\s*\*([^\n*]+(?:\n[^\n*]+)*)\*',
+        r'-\s*\*?Topic\*?\s*:\s*\*([^\n*]+(?:\n[^\n*]+)*)\*',
         text,
         re.IGNORECASE
     )
@@ -447,6 +497,10 @@ def extract_topic(text):
     return None
 
 def extract_venue(text):
+    structured_data = extract_structured_bullets(text)
+    if 'venue' in structured_data:
+        return structured_data['venue']
+    
     room_match = re.search(
         r'\b([A-Z]{1,5}\d{1,5}[A-Z]?)\b',  
         text
